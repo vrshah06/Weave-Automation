@@ -1,22 +1,24 @@
 const express = require("express");
-const multer = require("multer");
-const path = require("path");
 const controller = require("../controllers/automationController");
 const automationState = require("../services/automationState");
 
 const router = express.Router();
 
-const upload = multer({
-  dest: path.resolve(__dirname, "../../data/uploads")
-});
-
 router.get("/status", controller.getStatus);
 router.get("/logs", controller.getLogs);
 router.post("/start", controller.startAutomation);
 router.post("/stop", controller.stopAutomation);
-router.post("/upload", upload.single("file"), controller.uploadCsv);
 
-// Server-Sent Events (SSE) stream for real-time live UI updates
+// History & Retry Routes
+router.get("/runs", controller.getRuns);
+router.get("/runs/:id", controller.getRunDetails);
+router.post("/retry", controller.retryFailedMessages);
+
+// Confirmations Routes for Last Run
+router.get("/confirmations/last", controller.getLastRunConfirmations);
+router.post("/confirmations/verify", controller.verifyLastRunConfirmations);
+
+// SSE Stream for real-time live events
 router.get("/events", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
