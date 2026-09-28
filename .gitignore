@@ -1,0 +1,21 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Persistent Browser Profile (contains session tokens/cookies)
+weave-profile/
+
+# Logs, Screenshots, and Data
+logs/
+*.log
+data/appointments.csv
+
+# Environment Variables
+.env
+
+# Virtual Environment
+venv/
+env/
+ENV/
