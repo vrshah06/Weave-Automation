@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import sys
 import time
 from datetime import datetime
@@ -180,6 +181,7 @@ def process_appointments(
         return
 
     logger.info("Loaded %d valid appointment(s).", len(appointments))
+    logger.info("[EVENT] %s", json.dumps({"type": "LOADED_APPOINTMENTS", "total": len(appointments)}))
 
     dedup = DeduplicationManager()
 
@@ -205,9 +207,12 @@ def process_appointments(
         # --------------------------------------------------------------
         # Authentication
         # --------------------------------------------------------------
+        logger.info("[EVENT] %s", json.dumps({"type": "AUTH_START"}))
         if not authenticate_weave(weave):
+            logger.info("[EVENT] %s", json.dumps({"type": "AUTH_FAILED"}))
             capture_screenshot(page, "authentication_failed")
             return
+        logger.info("[EVENT] %s", json.dumps({"type": "AUTH_SUCCESS"}))
 
         # --------------------------------------------------------------
         # Process one patient at a time
@@ -223,10 +228,28 @@ def process_appointments(
                 appointment.patient_name,
                 masked_phone,
             )
+            logger.info(
+                "[EVENT] %s",
+                json.dumps({
+                    "type": "PATIENT_START",
+                    "position": position,
+                    "total": len(appointments),
+                    "patient_name": appointment.patient_name,
+                    "phone": masked_phone,
+                })
+            )
 
             # 1. Duplicate prevention
             if dedup.is_already_sent(appointment):
                 logger.info("SKIP_ALREADY_SENT")
+                logger.info(
+                    "[EVENT] %s",
+                    json.dumps({
+                        "type": "PATIENT_SKIPPED",
+                        "patient_name": appointment.patient_name,
+                        "reason": "Already sent today"
+                    })
+                )
                 stats["already_sent"] += 1
                 continue
 
@@ -435,6 +458,7 @@ def process_appointments(
                     )
 
                     stats["dry_run"] += 1
+                    logger.info("[EVENT] %s", json.dumps({"type": "MESSAGE_DRY_RUN", "patient_name": appointment.patient_name, "phone": masked_phone}))
                     continue
 
                 # ------------------------------------------------------
@@ -446,6 +470,7 @@ def process_appointments(
 
                 if ok and send_status == ProcessStatus.SENT:
                     logger.info("SENT — outgoing message verified.")
+                    logger.info("[EVENT] %s", json.dumps({"type": "MESSAGE_SENT", "patient_name": appointment.patient_name, "phone": masked_phone}))
 
                     dedup.log_result(
                         ProcessResult(
@@ -465,6 +490,7 @@ def process_appointments(
                         "SEND_UNCONFIRMED — no automatic resend: %s",
                         send_status.value,
                     )
+                    logger.info("[EVENT] %s", json.dumps({"type": "PATIENT_FAILED", "patient_name": appointment.patient_name, "phone": masked_phone, "reason": send_status.value}))
 
                     dedup.log_result(
                         ProcessResult(
@@ -491,6 +517,7 @@ def process_appointments(
                     appointment.row_index,
                     exc,
                 )
+                logger.info("[EVENT] %s", json.dumps({"type": "PATIENT_FAILED", "patient_name": appointment.patient_name, "phone": masked_phone, "reason": str(exc)}))
 
                 stats["failed"] += 1
 
@@ -528,6 +555,7 @@ def process_appointments(
         logger.info("Skipped:      %d", stats["skipped"])
         logger.info("Failed:       %d", stats["failed"])
         logger.info("=" * 60)
+        logger.info("[EVENT] %s", json.dumps({"type": "RUN_COMPLETE", "stats": stats, "total": len(appointments)}))
 
 
 def main() -> None:
