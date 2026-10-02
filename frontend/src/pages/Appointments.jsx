@@ -27,11 +27,27 @@ export default function Appointments({ onStartWithDate }) {
     fetch(`/api/appointments?date=${selectedDate}`)
       .then((res) => res.json())
       .then((data) => {
-        setAppointments(data.appointments || []);
+        const sorted = (data.appointments || []).sort(
+          (a, b) => parseTimeToMinutes(a.appointmentTime) - parseTimeToMinutes(b.appointmentTime)
+        );
+        setAppointments(sorted);
       })
       .catch((err) => console.error("Error fetching appointments:", err))
       .finally(() => setLoading(false));
   }, [selectedDate]);
+
+  function parseTimeToMinutes(timeStr) {
+    if (!timeStr || typeof timeStr !== "string") return 0;
+    const match = timeStr.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+    if (!match) return 0;
+    let hours = parseInt(match[1], 10);
+    const minutes = parseInt(match[2], 10);
+    const period = match[3] ? match[3].toUpperCase() : null;
+    if (period === "PM" && hours < 12) hours += 12;
+    if (period === "AM" && hours === 12) hours = 0;
+    return hours * 60 + minutes;
+  }
+
 
   // Toggle selection for single appointment
   const handleToggleSingle = async (id, currentVal) => {

@@ -53,6 +53,21 @@ def ensure_sample_csv_exists(csv_file_path: Path) -> None:
     logger.info("Created sample CSV at %s", csv_file_path)
 
 
+def parse_time_to_minutes(time_str: str) -> int:
+    if not time_str:
+        return 0
+    clean_str = time_str.strip().upper()
+    try:
+        dt = datetime.strptime(clean_str, "%I:%M %p")
+        return dt.hour * 60 + dt.minute
+    except ValueError:
+        try:
+            dt = datetime.strptime(clean_str, "%H:%M")
+            return dt.hour * 60 + dt.minute
+        except ValueError:
+            return 0
+
+
 def load_appointments(csv_file_path: Path) -> List[Appointment]:
     if not csv_file_path.exists():
         raise FileNotFoundError(f"CSV file not found: {csv_file_path}")
@@ -84,6 +99,9 @@ def load_appointments(csv_file_path: Path) -> List[Appointment]:
                 appointments.append(validate_appointment_row(row, idx))
             except ValueError as exc:
                 logger.error("CSV row %d skipped: %s", idx, exc)
+
+    # Sort appointments chronologically in ascending order (e.g. 8:15 AM -> 8:30 AM -> 4:15 PM)
+    appointments.sort(key=lambda a: parse_time_to_minutes(a.appointment_time))
 
     return appointments
 
@@ -285,7 +303,8 @@ def process_appointments(
                             ),
                         )
                     )
-                    stats["failed"] += 1
+                    logger.info("[EVENT] %s", json.dumps({"type": "PATIENT_SKIPPED", "patient_name": appointment.patient_name, "phone": masked_phone, "reason": "Recipient search failed"}))
+                    stats["skipped"] += 1
                     capture_screenshot(
                         page,
                         f"row_{appointment.row_index}_search_{status.value}",
@@ -322,13 +341,15 @@ def process_appointments(
                         )
                     )
 
-                    stats["failed"] += 1
+                    logger.info("[EVENT] %s", json.dumps({"type": "PATIENT_SKIPPED", "patient_name": appointment.patient_name, "phone": masked_phone, "reason": reason or "Recipient selection failed"}))
+                    stats["skipped"] += 1
                     capture_screenshot(
                         page,
                         f"row_{appointment.row_index}_recipient_{status.value}",
                         appointment.row_index,
                     )
                     continue
+
 
                 logger.info("Recipient selected and verified.")
 
@@ -464,12 +485,12 @@ def process_appointments(
                 # ------------------------------------------------------
                 # PRODUCTION SEND
                 # ------------------------------------------------------
-                ok, send_status = weave.send_message(
+                ok, send_status, fail_reason = weave.send_message(
                     message_text=message_text
                 )
 
                 if ok and send_status == ProcessStatus.SENT:
-                    logger.info("SENT — outgoing message verified.")
+                    logger.info("SENT — outgoing message verified and delivered.")
                     logger.info("[EVENT] %s", json.dumps({"type": "MESSAGE_SENT", "patient_name": appointment.patient_name, "phone": masked_phone}))
 
                     dedup.log_result(
@@ -485,18 +506,19 @@ def process_appointments(
 
                     stats["sent"] += 1
                 else:
-                    # IMPORTANT: do not retry automatically.
+                    err_msg = fail_reason or f"Message not delivered ({send_status.value})"
                     logger.error(
-                        "SEND_UNCONFIRMED — no automatic resend: %s",
+                        "MESSAGE NOT DELIVERED / FAILED — %s: %s",
                         send_status.value,
+                        err_msg,
                     )
-                    logger.info("[EVENT] %s", json.dumps({"type": "PATIENT_FAILED", "patient_name": appointment.patient_name, "phone": masked_phone, "reason": send_status.value}))
+                    logger.info("[EVENT] %s", json.dumps({"type": "PATIENT_FAILED", "patient_name": appointment.patient_name, "phone": masked_phone, "reason": err_msg}))
 
                     dedup.log_result(
                         ProcessResult(
                             appointment=appointment,
-                            status=send_status,
-                            error="Send was not confidently confirmed",
+                            status=send_status if send_status in (ProcessStatus.FAILED, ProcessStatus.NOT_DELIVERED) else ProcessStatus.FAILED,
+                            error=err_msg,
                             message_hash=message_hash,
                             timestamp=datetime.now().strftime(
                                 "%Y-%m-%d %H:%M:%S"
@@ -517,7 +539,9 @@ def process_appointments(
                     appointment.row_index,
                     exc,
                 )
-                logger.info("[EVENT] %s", json.dumps({"type": "PATIENT_FAILED", "patient_name": appointment.patient_name, "phone": masked_phone, "reason": str(exc)}))
+                logger.info("[EVENT] %s", json.dumps({"type": "PATIENT_SKIPPED", "patient_name": appointment.patient_name, "phone": masked_phone, "reason": f"Incomplete processing ({str(exc)})"}))
+                stats["skipped"] += 1
+
 
                 stats["failed"] += 1
 

@@ -115,11 +115,31 @@ class AutomationWorker {
         // Ignored
       }
 
+      // Check if any items remained in processing without final event
+      if (items && Array.isArray(items)) {
+        for (const item of items) {
+          if (isDbConnected) {
+            try {
+              const appt = await Appointment.findById(item.appointmentId);
+              if (appt && (appt.reminderStatus === "PENDING" || appt.reminderStatus === "SENDING" || appt.reminderStatus === "SELECTED")) {
+                await Appointment.findByIdAndUpdate(item.appointmentId, {
+                  reminderStatus: "SKIPPED",
+                  updatedAt: new Date()
+                });
+                this.runStats.processed += 1;
+                this.runStats.skipped += 1;
+              }
+            } catch (e) {
+              // Ignored
+            }
+          }
+        }
+      }
+
       const finalStatus = code === 0 ? "COMPLETED" : "FAILED";
 
-      // 3. Trigger Automatic Confirmation Process
+      // 3. Trigger Confirmation State Sync
       emitWorkspaceEvent(workspaceId, "automation:confirming", { runId });
-      await this._runAutomaticConfirmation(workspaceId, runId, isSendMode);
 
       if (isDbConnected && runRecord) {
         await AutomationRun.findByIdAndUpdate(runRecord._id, {
@@ -302,9 +322,9 @@ class AutomationWorker {
 
           automationState.addLog({
             patient: event.patient_name || "Unknown",
-            action: "Patient Failed",
+            action: "Message Failed / Not Delivered",
             status: "failed",
-            message: event.reason || "Recipient verification or message sending failed"
+            message: event.reason || "Message not delivered or failed"
           });
 
           if (isDbConnected && matched) {
@@ -327,7 +347,7 @@ class AutomationWorker {
                 attemptNumber: attemptCount + 1,
                 message: `Appointment reminder attempt`,
                 status: "FAILED",
-                failureReason: event.reason || "Recipient verification failed",
+                failureReason: event.reason || "Not Delivered",
                 failedAt: new Date()
               });
             } catch (e) {
@@ -344,27 +364,41 @@ class AutomationWorker {
         break;
 
       case "PATIENT_SKIPPED":
-        this.runStats.processed += 1;
-        this.runStats.skipped += 1;
+        {
+          const matched = items.find(i => i.phone === event.phone || i.patient_name === event.patient_name);
+          this.runStats.processed += 1;
+          this.runStats.skipped += 1;
 
-        automationState.updateState({
-          processed: this.runStats.processed,
-          skipped: this.runStats.skipped,
-          remaining: Math.max(0, automationState.getState().total - this.runStats.processed)
-        });
+          automationState.updateState({
+            processed: this.runStats.processed,
+            skipped: this.runStats.skipped,
+            remaining: Math.max(0, automationState.getState().total - this.runStats.processed)
+          });
 
-        automationState.addLog({
-          patient: event.patient_name || "Unknown",
-          action: "Patient Skipped",
-          status: "skipped",
-          message: event.reason || "Skipped (already confirmed/opted out)"
-        });
+          automationState.addLog({
+            patient: event.patient_name || "Unknown",
+            action: "Patient Skipped",
+            status: "skipped",
+            message: event.reason || "Skipped (incomplete processing or recipient not found)"
+          });
 
-        emitWorkspaceEvent(workspaceId, "automation:skipped", {
-          runId,
-          patientName: event.patient_name,
-          reason: event.reason
-        });
+          if (isDbConnected && matched) {
+            try {
+              await Appointment.findByIdAndUpdate(matched.appointmentId, {
+                reminderStatus: "SKIPPED",
+                updatedAt: new Date()
+              });
+            } catch (e) {
+              // Ignored
+            }
+          }
+
+          emitWorkspaceEvent(workspaceId, "automation:skipped", {
+            runId,
+            patientName: event.patient_name,
+            reason: event.reason
+          });
+        }
         break;
 
       default:
@@ -373,35 +407,10 @@ class AutomationWorker {
   }
 
   async _runAutomaticConfirmation(workspaceId, runId, isSendMode) {
-    if (mongoose.connection.readyState !== 1) return;
-    try {
-      // Find all SENT attempts for this run and mark CONFIRMED
-      const sentAttempts = await MessageAttempt.find({
-        workspaceId,
-        automationRunId: runId,
-        status: "SENT"
-      });
-
-      for (const attempt of sentAttempts) {
-        attempt.status = "CONFIRMED";
-        attempt.confirmedAt = new Date();
-        await attempt.save();
-
-        await Appointment.findByIdAndUpdate(attempt.appointmentId, {
-          reminderStatus: "CONFIRMED",
-          updatedAt: new Date()
-        });
-
-        emitWorkspaceEvent(workspaceId, "automation:confirmed", {
-          runId,
-          appointmentId: attempt.appointmentId,
-          status: "CONFIRMED"
-        });
-      }
-    } catch (e) {
-      console.warn("Automatic confirmation warning:", e.message);
-    }
+    // Keep message statuses intact without force-confirming failed messages
+    return;
   }
+
 }
 
 module.exports = new AutomationWorker();

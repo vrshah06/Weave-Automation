@@ -32,6 +32,9 @@ exports.getAppointments = async (req, res) => {
         reminderStatus: a.reminderStatus
       }));
 
+      // Chronological ascending sort by appointment time
+      formatted.sort((a, b) => parseTimeToMinutes(a.appointmentTime) - parseTimeToMinutes(b.appointmentTime));
+
       return res.json({ date: targetDate, appointments: formatted });
     } else {
       // Memory Store Fallback
@@ -54,12 +57,32 @@ exports.getAppointments = async (req, res) => {
         reminderSelected: a.reminderSelected,
         reminderStatus: a.reminderStatus
       }));
+
+      // Chronological ascending sort by appointment time
+      formatted.sort((a, b) => parseTimeToMinutes(a.appointmentTime) - parseTimeToMinutes(b.appointmentTime));
+
       return res.json({ date: targetDate || new Date().toISOString().split("T")[0], appointments: formatted });
     }
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 };
+
+function parseTimeToMinutes(timeStr) {
+  if (!timeStr || typeof timeStr !== "string") return 0;
+  const cleaned = timeStr.trim();
+  const match = cleaned.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!match) return 0;
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const period = match[3] ? match[3].toUpperCase() : null;
+
+  if (period === "PM" && hours < 12) hours += 12;
+  if (period === "AM" && hours === 12) hours = 0;
+
+  return hours * 60 + minutes;
+}
+
 
 exports.toggleSelection = async (req, res) => {
   try {

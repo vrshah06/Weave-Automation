@@ -49,6 +49,9 @@ exports.exportDatabaseToPayload = async (workspaceId, appointmentDate, targetIds
     }));
   }
 
+  // Sort appointments in chronological ascending order
+  appointmentsToExport.sort((a, b) => parseTimeToMinutes(a.appointment_time) - parseTimeToMinutes(b.appointment_time));
+
   // Create temporary CSV file for main.py execution
   const rootDir = path.resolve(__dirname, "../../");
   const tempDir = path.join(rootDir, "data");
@@ -58,6 +61,7 @@ exports.exportDatabaseToPayload = async (workspaceId, appointmentDate, targetIds
 
   const csvPath = path.join(tempDir, `temp_run_${Date.now()}.csv`);
   let csvContent = "patient_name,phone,appointment_date,appointment_time\n";
+
 
   for (const item of appointmentsToExport) {
     const nameFormatted = `"${item.patient_name.replace(/"/g, '""')}"`;
@@ -72,3 +76,19 @@ exports.exportDatabaseToPayload = async (workspaceId, appointmentDate, targetIds
     items: appointmentsToExport
   };
 };
+
+function parseTimeToMinutes(timeStr) {
+  if (!timeStr || typeof timeStr !== "string") return 0;
+  const cleaned = timeStr.trim();
+  const match = cleaned.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!match) return 0;
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const period = match[3] ? match[3].toUpperCase() : null;
+
+  if (period === "PM" && hours < 12) hours += 12;
+  if (period === "AM" && hours === 12) hours = 0;
+
+  return hours * 60 + minutes;
+}
+
