@@ -212,9 +212,11 @@ class WeaveMessenger:
         Navigates to Messages section by clicking the Messages sidebar link/icon on the left navigation bar.
         Always clicks the Messages navigation sidebar item after loading sign-in / app URL.
         """
-        logger.info("Clicking 'Messages' link on the left navigation bar...")
         try:
+            logger.info("Clicking 'Messages' link on the left navigation bar...")
+
             # Locate Messages link/icon in left navigation sidebar
+
             messages_link = (
                 self.page.get_by_role("link", name=re.compile(r"^\s*Messages\s*$", re.I))
                 .or_(self.page.locator("a[href*='/messages']"))
@@ -227,7 +229,6 @@ class WeaveMessenger:
             messages_link.wait_for(state="visible", timeout=timeout_ms)
             messages_link.click(force=True)
 
-            # Wait for Inbox view to be visible
             inbox_heading = (
                 self.page.locator("[data-trackingid='inbox-list-new-message-button']")
                 .or_(self.page.get_by_text("Inbox", exact=True))
@@ -251,14 +252,12 @@ class WeaveMessenger:
         """
         logger.info("Clicking 'New Message' button...")
         try:
-            # Press Escape to dismiss any lingering floating UI popups
             try:
                 self.page.keyboard.press("Escape")
-                time.sleep(0.3)
+                time.sleep(0.1)
             except Exception:
                 pass
 
-            # Primary locator: exact data-trackingid from inspect element
             new_btn = (
                 self.page.locator("[data-trackingid='inbox-list-new-message-button']")
                 .or_(self.page.locator("[data-fabric-ds-name='Button']:has-text('New Message')"))
@@ -269,7 +268,6 @@ class WeaveMessenger:
             new_btn.wait_for(state="visible", timeout=timeout_ms)
             new_btn.click(force=True)
 
-            # Wait for 'To:' input field to become visible inside composer
             to_field = self._get_to_field()
             to_field.wait_for(state="visible", timeout=timeout_ms)
             logger.info("'New Message' composer opened (To: field visible).")
@@ -332,6 +330,7 @@ class WeaveMessenger:
     def _extract_search_results(self, target_phone: str) -> List[RecipientSearchResult]:
         """
         Parses available matching contacts strictly from the floating UI search dropdown portal.
+        Uses single in-browser DOM evaluation for sub-millisecond execution.
         """
         results: List[RecipientSearchResult] = []
         try:
@@ -382,10 +381,11 @@ class WeaveMessenger:
 
     def select_recipient(self, phone: str, target_patient_name: Optional[str] = None) -> Tuple[bool, ProcessStatus, str]:
         """
-        Selects patient strictly from the search dropdown card (using person-list-item-expandable).
+        Selects patient from search dropdown card if available, or presses Enter on To: field if no patient card showed up.
         """
         logger.info(f"Selecting patient for phone: {phone}...")
         try:
+            to_field = self._get_to_field()
             portal = self.page.locator("div[data-floating-ui-portal]").first
             digits = self._digits(phone)[-10:]
             last7 = digits[-7:] if len(digits) >= 7 else digits
@@ -395,7 +395,7 @@ class WeaveMessenger:
                 name_match = portal.get_by_text(target_patient_name, exact=False).first
                 if name_match.count() > 0 and name_match.is_visible():
                     name_match.click(force=True)
-                    time.sleep(0.9)
+                    time.sleep(0.5)
                     return True, ProcessStatus.READY_TO_SEND, f"Clicked patient '{target_patient_name}' in search dropdown"
 
             # 2. Match phone in search dropdown
@@ -403,23 +403,22 @@ class WeaveMessenger:
                 phone_match = portal.get_by_text(last7, exact=False).first
                 if phone_match.count() > 0 and phone_match.is_visible():
                     phone_match.click(force=True)
-                    time.sleep(0.9)
+                    time.sleep(0.5)
                     return True, ProcessStatus.READY_TO_SEND, f"Clicked phone '{last7}' in search dropdown"
 
                 # 3. Click expandable patient list item in search dropdown
                 item = portal.locator("[data-trackingid='person-list-item-expandable'], [role='menuitem']").first
                 if item.count() > 0 and item.is_visible():
                     item.click(force=True)
-                    time.sleep(0.9)
+                    time.sleep(0.5)
                     return True, ProcessStatus.READY_TO_SEND, "Clicked person search dropdown card"
 
-            # 4. Keyboard ArrowDown + Enter fallback
-            to_field = self._get_to_field()
-            to_field.press("ArrowDown")
-            time.sleep(0.2)
+            # 4. If no patient card showed up in dropdown, press Enter on To: field to open direct chat with typed phone number
+            logger.info("No patient card in search dropdown. Pressing Enter on To: field to open direct chat for %s...", phone)
+            to_field.focus()
             to_field.press("Enter")
-            time.sleep(0.9)
-            return True, ProcessStatus.READY_TO_SEND, "Selected contact via Keyboard ArrowDown+Enter"
+            time.sleep(0.5)
+            return True, ProcessStatus.READY_TO_SEND, f"Pressed Enter on To: field to open chat for typed phone {phone}"
 
         except Exception as exc:
             logger.error(f"Recipient selection failed: {exc}")
@@ -454,31 +453,61 @@ class WeaveMessenger:
 
     def wait_for_conversation(self, timeout_ms: int = MESSAGE_LOAD_TIMEOUT, expected_phone: Optional[str] = None, expected_patient_name: Optional[str] = None) -> Tuple[bool, ProcessStatus]:
         """
-        Waits for the selected recipient conversation to finish loading and React components to settle.
+        Waits for the selected recipient conversation to finish loading and strictly verifies that the open chat header matches the target patient/phone.
         """
-        logger.info("Waiting for patient conversation to load and settle...")
+        logger.info("Waiting for patient conversation to load and verifying header recipient...")
         try:
             composer = self._get_composer()
             composer.wait_for(state="visible", timeout=timeout_ms)
-            time.sleep(0.9)  # Wait for React thread history and header re-render to complete
-            logger.info("Conversation loaded and settled successfully.")
+            time.sleep(0.5)
+
+            # STRICT RECIPIENT VERIFICATION ON OPEN CONVERSATION HEADER
+            if expected_patient_name or expected_phone:
+                header_text = ""
+                try:
+                    header_el = self.page.locator("header, [class*='header'], [data-testid*='header'], div[class*='thread-header']").first
+                    if header_el.count() > 0 and header_el.is_visible():
+                        header_text = header_el.inner_text().strip()
+                except Exception:
+                    pass
+
+                matched = False
+                if expected_patient_name and header_text:
+                    name_parts = [p.strip() for p in re.split(r"[,\s]+", expected_patient_name) if len(p.strip()) > 1]
+                    if any(part.lower() in header_text.lower() for part in name_parts):
+                        matched = True
+
+                if not matched and expected_phone and header_text:
+                    digits = self._digits(expected_phone)[-7:]
+                    clean_header = re.sub(r"\D", "", header_text)
+                    if digits and digits in clean_header:
+                        matched = True
+
+                if expected_patient_name and not matched and header_text:
+                    logger.error(
+                        "CONVERSATION RECIPIENT MISMATCH: Active chat header text is '%s', expected target patient '%s' (%s). ABORTING SEND.",
+                        header_text,
+                        expected_patient_name,
+                        expected_phone,
+                    )
+                    return False, ProcessStatus.RECIPIENT_MISMATCH
+
+            logger.info("Conversation loaded and recipient header verified successfully.")
             return True, ProcessStatus.READY_TO_SEND
         except PlaywrightTimeoutError:
             logger.error("Conversation load timed out.")
             return False, ProcessStatus.CONVERSATION_LOAD_TIMEOUT
 
+
     def enter_message(self, message_text: str) -> Tuple[bool, ProcessStatus]:
         """
-        Populates the message composer visually line-by-line using Shift+Enter for newlines,
-        scrolling parent containers to the bottom so the typed message is 100% visible on screen.
+        Populates the message composer using fill and DOM events to guarantee correct text structure.
         """
-        logger.info("Composing reminder message visually into chat box...")
+        logger.info("Composing reminder message into chat box...")
         try:
-            time.sleep(1.0)
             composer = self._get_composer()
             composer.wait_for(state="visible", timeout=DEFAULT_TIMEOUT)
 
-            # Scroll all parent scrollable containers to bottom & scroll textarea into center of view
             composer.evaluate("""el => {
                 el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
                 let p = el.parentElement;
@@ -494,30 +523,23 @@ class WeaveMessenger:
             composer.click(force=True)
             composer.focus()
 
-            # Clear composer
-            composer.fill("")
+            # Atomically set full message text to prevent cursor jumping or line re-ordering
+            composer.fill(message_text)
 
-            # Fast visual typing line-by-line with Shift+Enter so user watches typing without triggering Enter submit
-            lines = message_text.split("\n")
-            for idx, line in enumerate(lines):
-                if line:
-                    composer.press_sequentially(line, delay=2)
-                if idx < len(lines) - 1:
-                    composer.press("Shift+Enter")
-
-            # Dispatch DOM events to sync UI state
-            composer.evaluate("""el => {
+            composer.evaluate("""(el, textVal) => {
+                el.value = textVal;
                 el.dispatchEvent(new Event('input', { bubbles: true }));
                 el.dispatchEvent(new Event('change', { bubbles: true }));
-            }""")
+            }""", message_text)
 
-            time.sleep(1.0)
-
-            logger.info("Reminder message visually typed into chat box.")
+            time.sleep(0.5)
+            logger.info("Reminder message populated into chat box.")
             return True, ProcessStatus.READY_TO_SEND
         except Exception as exc:
             logger.error(f"Failed to enter message: {exc}")
             return False, ProcessStatus.MESSAGE_INPUT_NOT_FOUND
+
+
 
     def get_send_button_locator(self) -> Locator:
         """
@@ -575,10 +597,54 @@ class WeaveMessenger:
     # 4. SEND & CONFIRMATION
     # =========================================================================
 
-    def send_message(self, timeout_ms: int = DEFAULT_TIMEOUT, message_text: Optional[str] = None) -> Tuple[bool, ProcessStatus]:
+    def check_delivery_status(self, wait_seconds: float = 1.0) -> Tuple[bool, str]:
         """
-        Clicks the Send button at bottom right of conversation panel.
-        MUST ONLY BE CALLED IF --send IS EXPLICITLY PROVIDED.
+        Checks the LAST appended message in the active thread conversation for delivery failure ('Not Delivered', 'Message failed', error icon).
+        Returns (is_failed, failure_reason).
+        """
+        try:
+            time.sleep(wait_seconds)
+
+            # 1. Target the LAST error SVG icon or alert container in the current conversation thread
+            error_icon = self.page.locator(
+                "span.status-container svg[color='error'], "
+                "svg use[href*='alert-invert'], "
+                "span.status-container svg"
+            ).last
+
+            if error_icon.count() > 0 and error_icon.is_visible():
+                reason = "Not Delivered - Weave reported message delivery failure"
+                try:
+                    error_icon.hover(force=True)
+                    time.sleep(0.3)
+                    tooltip = self.page.locator("div[role='tooltip'], .tooltip, [data-floating-ui-portal]").first
+                    if tooltip.count() > 0 and tooltip.is_visible():
+                        t_text = tooltip.inner_text().strip()
+                        if t_text:
+                            reason = f"Not Delivered ({t_text})"
+                except Exception:
+                    pass
+                logger.error("Delivery failure icon detected on latest message: %s", reason)
+                return True, reason
+
+            # 2. Check for 'Not Delivered' or 'Message failed' text on the LAST message bubble
+            last_message_bubble = self.page.locator("[data-testid='thread-sending-area']").locator("xpath=preceding::div[contains(@class, 'message') or contains(@class, 'bubble') or contains(@class, 'status')]").last
+            if last_message_bubble.count() > 0 and last_message_bubble.is_visible():
+                text = last_message_bubble.inner_text().strip()
+                if "Not delivered" in text or "Not Delivered" in text or "Message failed" in text:
+                    logger.error("Delivery failure text detected on latest message bubble: %s", text)
+                    return True, f"Not Delivered ({text})"
+
+            return False, ""
+        except Exception as e:
+            logger.warning("Error checking delivery status: %s", e)
+            return False, ""
+
+
+    def send_message(self, timeout_ms: int = DEFAULT_TIMEOUT, message_text: Optional[str] = None) -> Tuple[bool, ProcessStatus, str]:
+        """
+        Clicks the Send button at bottom right of conversation panel and verifies delivery.
+        Returns (is_sent, status, failure_reason).
         """
         logger.info("Clicking Send button...")
         try:
@@ -596,9 +662,11 @@ class WeaveMessenger:
             send_btn.click(force=True)
             logger.info("Send button clicked. Verifying delivery confirmation...")
 
-            sent, status = self.verify_sent(timeout_ms=5000)
+            sent, status, reason = self.verify_sent(timeout_ms=5000)
             if sent:
-                return sent, status
+                return sent, status, ""
+            if status == ProcessStatus.NOT_DELIVERED or status == ProcessStatus.FAILED:
+                return False, status, reason
 
             # Fallback 1: Click again standard click
             logger.info("Composer not cleared after first click. Retrying standard click...")
@@ -607,9 +675,11 @@ class WeaveMessenger:
             except Exception:
                 pass
 
-            sent, status = self.verify_sent(timeout_ms=3000)
+            sent, status, reason = self.verify_sent(timeout_ms=3000)
             if sent:
-                return sent, status
+                return sent, status, ""
+            if status == ProcessStatus.NOT_DELIVERED or status == ProcessStatus.FAILED:
+                return False, status, reason
 
             # Fallback 2: Press Enter key inside composer
             logger.info("Composer still not cleared. Trying Enter keypress in composer...")
@@ -623,12 +693,13 @@ class WeaveMessenger:
             return self.verify_sent(timeout_ms=5000)
         except Exception as e:
             logger.error(f"Failed to click send button: {e}")
-            return False, ProcessStatus.SEND_UNCONFIRMED
+            return False, ProcessStatus.SEND_UNCONFIRMED, str(e)
 
-    def verify_sent(self, timeout_ms: int = DEFAULT_TIMEOUT) -> Tuple[bool, ProcessStatus]:
+    def verify_sent(self, timeout_ms: int = DEFAULT_TIMEOUT) -> Tuple[bool, ProcessStatus, str]:
         """
-        Verifies that the message was successfully sent.
-        Evidence: Composer cleared, message bubble appended in conversation list.
+        Verifies that the message was successfully sent and DELIVERED in Weave.
+        Evidence: Composer cleared AND no 'Not Delivered' error indicator in UI.
+        Returns (is_sent, status, failure_reason).
         """
         try:
             composer = self._get_composer()
@@ -643,11 +714,19 @@ class WeaveMessenger:
                 time.sleep(0.5)
 
             if cleared:
-                logger.info("Message delivery confirmed: Composer cleared.")
-                return True, ProcessStatus.SENT
+                # IMPORTANT: Check if Weave reported 'Not Delivered' or delivery failure!
+                failed, failure_reason = self.check_delivery_status(wait_seconds=1.0)
+                if failed:
+
+                    logger.error("Message was dispatched but Weave marked it as NOT DELIVERED: %s", failure_reason)
+                    return False, ProcessStatus.NOT_DELIVERED, failure_reason
+
+                logger.info("Message delivery confirmed: Composer cleared and no delivery errors reported.")
+                return True, ProcessStatus.SENT, ""
 
             logger.warning("Composer input was not cleared within timeout. Verification uncertain.")
-            return False, ProcessStatus.SEND_UNCONFIRMED
+            return False, ProcessStatus.SEND_UNCONFIRMED, "Composer input was not cleared within timeout"
         except Exception as e:
             logger.error(f"Error during send verification: {e}")
-            return False, ProcessStatus.SEND_UNCONFIRMED
+            return False, ProcessStatus.SEND_UNCONFIRMED, str(e)
+

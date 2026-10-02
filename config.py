@@ -28,7 +28,7 @@ WEAVE_MESSAGES_URL = os.getenv("WEAVE_MESSAGES_URL", "https://app.getweave.com/m
 
 # Browser Configuration
 HEADLESS = os.getenv("HEADLESS", "False").lower() in ("true", "1", "t")
-SLOW_MO = int(os.getenv("SLOW_MO", "300"))
+SLOW_MO = int(os.getenv("SLOW_MO", "100"))
 DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT", "15000"))
 SEARCH_TIMEOUT = int(os.getenv("SEARCH_TIMEOUT", "20000"))
 MESSAGE_LOAD_TIMEOUT = int(os.getenv("MESSAGE_LOAD_TIMEOUT", "30000"))

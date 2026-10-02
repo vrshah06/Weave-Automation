@@ -24,7 +24,9 @@ class ProcessStatus(str, Enum):
     BROWSER_ERROR = "BROWSER_ERROR"
     INVALID_PHONE = "INVALID_PHONE"
     INVALID_CSV = "INVALID_CSV"
+    NOT_DELIVERED = "NOT_DELIVERED"
     FAILED = "FAILED"
+
 
 
 @dataclass
